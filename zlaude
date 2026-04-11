@@ -46,15 +46,6 @@ EOF
   exit 0
 fi
 
-# Migration from legacy path
-LEGACY_ENV="$HOME/.zlaude/.env"
-if [[ ! -f "$ZLAUDE_ENV_FILE" && -f "$LEGACY_ENV" ]]; then
-  echo "note: migrating config from $LEGACY_ENV to $ZLAUDE_ENV_FILE" >&2
-  mkdir -p "$ZLAUDE_CONFIG_DIR"
-  cp "$LEGACY_ENV" "$ZLAUDE_ENV_FILE"
-  chmod 600 "$ZLAUDE_ENV_FILE"
-fi
-
 if [[ ! -f "$ZLAUDE_ENV_FILE" ]]; then
   echo "error: $ZLAUDE_ENV_FILE not found. Run: zlaude --setup" >&2
   exit 1

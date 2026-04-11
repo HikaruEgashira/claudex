@@ -46,8 +46,6 @@ To edit manually:
 $EDITOR "${XDG_CONFIG_HOME:-$HOME/.config}/zlaude/.env"
 ```
 
-See [.env.example](.env.example) for all available variables.
-
 ## Uninstall
 
 ```sh
