@@ -22,7 +22,7 @@ zlaude --setup <preset>     # configure with a preset
 | `bedrock` | AWS Bedrock |
 | `vertex` | Google Cloud Vertex AI |
 | `foundry` | Microsoft Foundry (Azure) |
-| `qwen` | Qwen 3.5 via OpenRouter |
+| `qwen` | Alibaba Cloud Coding Plan (Qwen) |
 
 See [`presets/`](presets/) for details. To add a custom backend, create a new `.env` file in the presets directory.
 
