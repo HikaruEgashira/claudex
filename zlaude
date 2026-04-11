@@ -28,9 +28,8 @@ if [[ "${1:-}" == "--setup" ]]; then
     for f in "$ZLAUDE_PRESETS_DIR"/*.env; do
       [[ -f "$f" ]] || continue
       name="$(basename "$f" .env)"
-      url="$(grep -m1 '^ANTHROPIC_BASE_URL=' "$f" | cut -d= -f2-)"
-      model="$(grep -m1 '^ANTHROPIC_DEFAULT_MODEL=' "$f" | cut -d= -f2-)"
-      printf "  %-12s %s (%s)\n" "$name" "$url" "$model"
+      desc="$(grep -m1 '^#' "$f" | sed 's/^# *//')"
+      printf "  %-12s %s\n" "$name" "$desc"
     done
     exit 0
   fi
@@ -42,10 +41,6 @@ if [[ "${1:-}" == "--setup" ]]; then
     exit 1
   fi
 
-  # Read preset values
-  base_url="$(grep -m1 '^ANTHROPIC_BASE_URL=' "$preset_file" | cut -d= -f2-)"
-  model="$(grep -m1 '^ANTHROPIC_DEFAULT_MODEL=' "$preset_file" | cut -d= -f2-)"
-
   mkdir -p "$ZLAUDE_CONFIG_DIR"
   if [[ -f "$ZLAUDE_ENV_FILE" ]]; then
     echo "Config already exists at $ZLAUDE_ENV_FILE"
@@ -53,21 +48,32 @@ if [[ "${1:-}" == "--setup" ]]; then
     [[ "$answer" != [yY] ]] && exit 0
   fi
 
-  read -rp "ANTHROPIC_AUTH_TOKEN: " -s auth_token
-  echo
-  if [[ -z "$auth_token" ]]; then
-    echo "error: auth token is required" >&2
-    exit 1
-  fi
+  # Process preset template
+  output=""
+  while IFS= read -r line; do
+    [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+    key="${line%%=*}"
+    value="${line#*=}"
 
-  cat > "$ZLAUDE_ENV_FILE" <<EOF
-ANTHROPIC_AUTH_TOKEN=${auth_token}
-ANTHROPIC_BASE_URL=${base_url}
-API_TIMEOUT_MS=3000000
-ANTHROPIC_DEFAULT_OPUS_MODEL=${model}
-ANTHROPIC_DEFAULT_SONNET_MODEL=${model}
-ANTHROPIC_DEFAULT_HAIKU_MODEL=${model}
-EOF
+    if [[ "$value" == "__secret__" ]]; then
+      read -rp "${key}: " -s user_value
+      echo
+      [[ -z "$user_value" ]] && echo "error: ${key} is required" >&2 && exit 1
+      output+="${key}=${user_value}"$'\n'
+    elif [[ "$value" == "__prompt__" ]]; then
+      read -rp "${key}: " user_value
+      [[ -z "$user_value" ]] && echo "error: ${key} is required" >&2 && exit 1
+      output+="${key}=${user_value}"$'\n'
+    elif [[ "$value" =~ ^__prompt:(.+)__$ ]]; then
+      default="${BASH_REMATCH[1]}"
+      read -rp "${key} [${default}]: " user_value
+      output+="${key}=${user_value:-$default}"$'\n'
+    else
+      output+="${line}"$'\n'
+    fi
+  done < "$preset_file"
+
+  printf '%s' "$output" > "$ZLAUDE_ENV_FILE"
   chmod 600 "$ZLAUDE_ENV_FILE"
   echo "Config written to $ZLAUDE_ENV_FILE (preset: ${preset_name})"
   exit 0

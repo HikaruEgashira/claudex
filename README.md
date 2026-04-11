@@ -11,12 +11,20 @@ curl -fsSL https://raw.githubusercontent.com/HikaruEgashira/zlaude/main/install.
 ## Setup
 
 ```sh
-zlaude --setup          # list available presets
-zlaude --setup zai      # setup with z.ai preset
-zlaude --setup openrouter  # setup with OpenRouter preset
+zlaude --setup              # list available presets
+zlaude --setup <preset>     # configure with a preset
 ```
 
-See [`presets/`](presets/) for available configurations.
+| Preset | Backend |
+|---|---|
+| `zai` | Z.AI GLM proxy |
+| `openrouter` | OpenRouter |
+| `bedrock` | AWS Bedrock |
+| `vertex` | Google Cloud Vertex AI |
+| `foundry` | Microsoft Foundry (Azure) |
+| `qwen` | Qwen 3.5 via OpenRouter |
+
+See [`presets/`](presets/) for details. To add a custom backend, create a new `.env` file in the presets directory.
 
 ## Usage
 

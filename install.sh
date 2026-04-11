@@ -4,7 +4,7 @@ set -euo pipefail
 INSTALL_DIR="${HOME}/.local/share/zlaude"
 BIN_DIR="${HOME}/.local/bin"
 REPO_RAW="https://raw.githubusercontent.com/HikaruEgashira/zlaude/main"
-PRESETS=(zai openrouter)
+PRESETS=(zai openrouter bedrock vertex foundry qwen)
 
 mkdir -p "$INSTALL_DIR/presets" "$BIN_DIR"
 
