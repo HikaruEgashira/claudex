@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ZLAUDE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zlaude"
-ZLAUDE_ENV_FILE="${ZLAUDE_CONFIG_DIR}/.env"
-ZLAUDE_PRESETS_DIR="${ZLAUDE_PRESETS_DIR:-$(cd "$(dirname "$0")" && pwd)/presets}"
+CLAUDEX_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claudex"
+CLAUDEX_ENV_FILE="${CLAUDEX_CONFIG_DIR}/.env"
+CLAUDEX_PRESETS_DIR="${CLAUDEX_PRESETS_DIR:-$(cd "$(dirname "$0")" && pwd)/presets}"
 
 # Dependency checks
 if ! command -v claude &>/dev/null; then
@@ -22,10 +22,10 @@ if [[ "${1:-}" == "--setup" ]]; then
 
   # List presets when no name given
   if [[ -z "$preset_name" ]]; then
-    echo "Usage: zlaude --setup <preset>"
+    echo "Usage: claudex --setup <preset>"
     echo ""
     echo "Available presets:"
-    for f in "$ZLAUDE_PRESETS_DIR"/*.env; do
+    for f in "$CLAUDEX_PRESETS_DIR"/*.env; do
       [[ -f "$f" ]] || continue
       name="$(basename "$f" .env)"
       desc="$(grep -m1 '^#' "$f" | sed 's/^# *//')"
@@ -34,16 +34,16 @@ if [[ "${1:-}" == "--setup" ]]; then
     exit 0
   fi
 
-  preset_file="${ZLAUDE_PRESETS_DIR}/${preset_name}.env"
+  preset_file="${CLAUDEX_PRESETS_DIR}/${preset_name}.env"
   if [[ ! -f "$preset_file" ]]; then
     echo "error: unknown preset '${preset_name}'" >&2
-    echo "Run 'zlaude --setup' to see available presets." >&2
+    echo "Run 'claudex --setup' to see available presets." >&2
     exit 1
   fi
 
-  mkdir -p "$ZLAUDE_CONFIG_DIR"
-  if [[ -f "$ZLAUDE_ENV_FILE" ]]; then
-    echo "Config already exists at $ZLAUDE_ENV_FILE"
+  mkdir -p "$CLAUDEX_CONFIG_DIR"
+  if [[ -f "$CLAUDEX_ENV_FILE" ]]; then
+    echo "Config already exists at $CLAUDEX_ENV_FILE"
     read -rp "Overwrite? [y/N] " answer
     [[ "$answer" != [yY] ]] && exit 0
   fi
@@ -73,15 +73,15 @@ if [[ "${1:-}" == "--setup" ]]; then
     fi
   done < "$preset_file"
 
-  printf '%s' "$output" > "$ZLAUDE_ENV_FILE"
-  chmod 600 "$ZLAUDE_ENV_FILE"
-  echo "Config written to $ZLAUDE_ENV_FILE (preset: ${preset_name})"
+  printf '%s' "$output" > "$CLAUDEX_ENV_FILE"
+  chmod 600 "$CLAUDEX_ENV_FILE"
+  echo "Config written to $CLAUDEX_ENV_FILE (preset: ${preset_name})"
   exit 0
 fi
 
-if [[ ! -f "$ZLAUDE_ENV_FILE" ]]; then
-  echo "error: $ZLAUDE_ENV_FILE not found. Run: zlaude --setup" >&2
+if [[ ! -f "$CLAUDEX_ENV_FILE" ]]; then
+  echo "error: $CLAUDEX_ENV_FILE not found. Run: claudex --setup" >&2
   exit 1
 fi
 
-exec dotenvx run --quiet --env-file "$ZLAUDE_ENV_FILE" -- claude "$@"
+exec dotenvx run --quiet --env-file "$CLAUDEX_ENV_FILE" -- claude "$@"
