@@ -17,6 +17,7 @@ zlaude --setup <preset>     # configure with a preset
 
 | Preset | Backend |
 |---|---|
+| `anthropic` | Anthropic API (direct) |
 | `zai` | Z.AI GLM proxy |
 | `openrouter` | OpenRouter |
 | `bedrock` | AWS Bedrock |
