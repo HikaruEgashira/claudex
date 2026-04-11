@@ -3,6 +3,7 @@ set -euo pipefail
 
 ZLAUDE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zlaude"
 ZLAUDE_ENV_FILE="${ZLAUDE_CONFIG_DIR}/.env"
+ZLAUDE_PRESETS_DIR="${ZLAUDE_PRESETS_DIR:-$(cd "$(dirname "$0")" && pwd)/presets}"
 
 # Dependency checks
 if ! command -v claude &>/dev/null; then
@@ -17,22 +18,48 @@ fi
 
 # Setup mode
 if [[ "${1:-}" == "--setup" ]]; then
+  preset_name="${2:-}"
+
+  # List presets when no name given
+  if [[ -z "$preset_name" ]]; then
+    echo "Usage: zlaude --setup <preset>"
+    echo ""
+    echo "Available presets:"
+    for f in "$ZLAUDE_PRESETS_DIR"/*.env; do
+      [[ -f "$f" ]] || continue
+      name="$(basename "$f" .env)"
+      url="$(grep -m1 '^ANTHROPIC_BASE_URL=' "$f" | cut -d= -f2-)"
+      model="$(grep -m1 '^ANTHROPIC_DEFAULT_MODEL=' "$f" | cut -d= -f2-)"
+      printf "  %-12s %s (%s)\n" "$name" "$url" "$model"
+    done
+    exit 0
+  fi
+
+  preset_file="${ZLAUDE_PRESETS_DIR}/${preset_name}.env"
+  if [[ ! -f "$preset_file" ]]; then
+    echo "error: unknown preset '${preset_name}'" >&2
+    echo "Run 'zlaude --setup' to see available presets." >&2
+    exit 1
+  fi
+
+  # Read preset values
+  base_url="$(grep -m1 '^ANTHROPIC_BASE_URL=' "$preset_file" | cut -d= -f2-)"
+  model="$(grep -m1 '^ANTHROPIC_DEFAULT_MODEL=' "$preset_file" | cut -d= -f2-)"
+
   mkdir -p "$ZLAUDE_CONFIG_DIR"
   if [[ -f "$ZLAUDE_ENV_FILE" ]]; then
     echo "Config already exists at $ZLAUDE_ENV_FILE"
     read -rp "Overwrite? [y/N] " answer
     [[ "$answer" != [yY] ]] && exit 0
   fi
-  read -rp "ANTHROPIC_BASE_URL [https://api.z.ai/api/anthropic]: " base_url
-  base_url="${base_url:-https://api.z.ai/api/anthropic}"
+
   read -rp "ANTHROPIC_AUTH_TOKEN: " -s auth_token
   echo
   if [[ -z "$auth_token" ]]; then
     echo "error: auth token is required" >&2
     exit 1
   fi
-  read -rp "Default model [glm-5.1]: " model
-  model="${model:-glm-5.1}"
+
   cat > "$ZLAUDE_ENV_FILE" <<EOF
 ANTHROPIC_AUTH_TOKEN=${auth_token}
 ANTHROPIC_BASE_URL=${base_url}
@@ -42,7 +69,7 @@ ANTHROPIC_DEFAULT_SONNET_MODEL=${model}
 ANTHROPIC_DEFAULT_HAIKU_MODEL=${model}
 EOF
   chmod 600 "$ZLAUDE_ENV_FILE"
-  echo "Config written to $ZLAUDE_ENV_FILE"
+  echo "Config written to $ZLAUDE_ENV_FILE (preset: ${preset_name})"
   exit 0
 fi
 

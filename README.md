@@ -11,16 +11,12 @@ curl -fsSL https://raw.githubusercontent.com/HikaruEgashira/zlaude/main/install.
 ## Setup
 
 ```sh
-zlaude --setup
+zlaude --setup          # list available presets
+zlaude --setup zai      # setup with z.ai preset
+zlaude --setup openrouter  # setup with OpenRouter preset
 ```
 
-You will be prompted for:
-
-| Variable | Description | Default |
-|---|---|---|
-| `ANTHROPIC_BASE_URL` | API endpoint URL | `https://api.z.ai/api/anthropic` |
-| `ANTHROPIC_AUTH_TOKEN` | Your API token | (required) |
-| `Default model` | Model name for all tiers | `glm-5.1` |
+See [`presets/`](presets/) for available configurations.
 
 ## Usage
 
@@ -50,6 +46,7 @@ $EDITOR "${XDG_CONFIG_HOME:-$HOME/.config}/zlaude/.env"
 
 ```sh
 rm ~/.local/bin/zlaude
+rm -rf ~/.local/share/zlaude
 rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/zlaude"
 ```
 
