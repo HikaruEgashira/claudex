@@ -106,11 +106,13 @@ if [[ "${1:-}" == "--setup" ]]; then
   touch "$CLAUDEX_ENV_FILE"
 
   # Write all values via dotenvx set — secrets are encrypted, others are plain.
+  # Unset DOTENV_PRIVATE_KEY so dotenvx generates a fresh keypair into .env.keys
+  # instead of reusing a stale key from the shell environment.
   for i in "${!kv_keys[@]}"; do
     if [[ "${kv_secret[$i]}" == "1" ]]; then
-      dotenvx set "${kv_keys[$i]}" "${kv_values[$i]}" -f "$CLAUDEX_ENV_FILE" --quiet
+      env -u DOTENV_PRIVATE_KEY dotenvx set "${kv_keys[$i]}" "${kv_values[$i]}" -f "$CLAUDEX_ENV_FILE" --quiet
     else
-      dotenvx set "${kv_keys[$i]}" "${kv_values[$i]}" -f "$CLAUDEX_ENV_FILE" --plain --quiet
+      env -u DOTENV_PRIVATE_KEY dotenvx set "${kv_keys[$i]}" "${kv_values[$i]}" -f "$CLAUDEX_ENV_FILE" --plain --quiet
     fi
   done
 
