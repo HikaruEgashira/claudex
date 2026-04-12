@@ -43,9 +43,11 @@ if [[ "${1:-}" == "--setup" ]]; then
 
   mkdir -p "$CLAUDEX_CONFIG_DIR"
   if [[ -f "$CLAUDEX_ENV_FILE" ]]; then
-    echo "Config already exists at $CLAUDEX_ENV_FILE"
-    read -rp "Overwrite? [y/N] " answer
-    [[ "$answer" != [yY] ]] && exit 0
+    if [[ -t 0 ]]; then
+      echo "Config already exists at $CLAUDEX_ENV_FILE"
+      read -rp "Overwrite? [y/N] " answer
+      [[ "$answer" != [yY] ]] && exit 0
+    fi
   fi
 
   # Process preset template
@@ -56,18 +58,40 @@ if [[ "${1:-}" == "--setup" ]]; then
     value="${line#*=}"
 
     if [[ "$value" == "__secret__" ]]; then
-      read -rp "${key}: " -s user_value
-      echo
-      [[ -z "$user_value" ]] && echo "error: ${key} is required" >&2 && exit 1
-      output+="${key}=${user_value}"$'\n'
+      env_value="${!key:-}"
+      if [[ -n "$env_value" ]]; then
+        output+="${key}=${env_value}"$'\n'
+      elif [[ -t 0 ]]; then
+        read -rp "${key}: " -s user_value
+        echo
+        [[ -z "$user_value" ]] && echo "error: ${key} is required" >&2 && exit 1
+        output+="${key}=${user_value}"$'\n'
+      else
+        echo "error: ${key} is required (set it as an environment variable)" >&2 && exit 1
+      fi
     elif [[ "$value" == "__prompt__" ]]; then
-      read -rp "${key}: " user_value
-      [[ -z "$user_value" ]] && echo "error: ${key} is required" >&2 && exit 1
-      output+="${key}=${user_value}"$'\n'
-    elif [[ "$value" =~ ^__prompt:(.+)__$ ]]; then
+      env_value="${!key:-}"
+      if [[ -n "$env_value" ]]; then
+        output+="${key}=${env_value}"$'\n'
+      elif [[ -t 0 ]]; then
+        read -rp "${key}: " user_value
+        [[ -z "$user_value" ]] && echo "error: ${key} is required" >&2 && exit 1
+        output+="${key}=${user_value}"$'\n'
+      else
+        echo "error: ${key} is required (set it as an environment variable)" >&2 && exit 1
+      fi
+    elif [[ "$value" =~ ^__prompt:(.*)__$ ]]; then
       default="${BASH_REMATCH[1]}"
-      read -rp "${key} [${default}]: " user_value
-      output+="${key}=${user_value:-$default}"$'\n'
+      env_value="${!key:-}"
+      if [[ -n "$env_value" ]]; then
+        resolved="$env_value"
+      elif [[ -t 0 ]]; then
+        read -rp "${key} [${default}]: " user_value
+        resolved="${user_value:-$default}"
+      else
+        resolved="$default"
+      fi
+      [[ -n "$resolved" ]] && output+="${key}=${resolved}"$'\n'
     else
       output+="${line}"$'\n'
     fi
