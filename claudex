@@ -126,4 +126,4 @@ if [[ ! -f "$CLAUDEX_ENV_FILE" ]]; then
   exit 1
 fi
 
-exec dotenvx run --quiet --env-file "$CLAUDEX_ENV_FILE" -- claude "$@"
+exec env -u DOTENV_PRIVATE_KEY dotenvx run --quiet --env-file "$CLAUDEX_ENV_FILE" -fk "${CLAUDEX_CONFIG_DIR}/.env.keys" -- claude "$@"
