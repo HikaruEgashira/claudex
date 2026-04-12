@@ -48,10 +48,15 @@ if [[ "${1:-}" == "--setup" ]]; then
       read -rp "Overwrite? [y/N] " answer
       [[ "$answer" != [yY] ]] && exit 0
     fi
+    rm -f "$CLAUDEX_ENV_FILE" "${CLAUDEX_CONFIG_DIR}/.env.keys"
   fi
 
-  # Process preset template
-  output=""
+  # Collect key-value pairs in memory, then write encrypted via dotenvx set.
+  # Plaintext secrets never touch the filesystem.
+  declare -a kv_keys=()
+  declare -a kv_values=()
+  declare -a kv_secret=()  # "1" = encrypt, "0" = plain
+
   while IFS= read -r line; do
     [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
     key="${line%%=*}"
@@ -60,26 +65,26 @@ if [[ "${1:-}" == "--setup" ]]; then
     if [[ "$value" == "__secret__" ]]; then
       env_value="${!key:-}"
       if [[ -n "$env_value" ]]; then
-        output+="${key}=${env_value}"$'\n'
+        resolved="$env_value"
       elif [[ -t 0 ]]; then
-        read -rp "${key}: " -s user_value
+        read -rp "${key}: " -s resolved
         echo
-        [[ -z "$user_value" ]] && echo "error: ${key} is required" >&2 && exit 1
-        output+="${key}=${user_value}"$'\n'
+        [[ -z "$resolved" ]] && echo "error: ${key} is required" >&2 && exit 1
       else
         echo "error: ${key} is required (set it as an environment variable)" >&2 && exit 1
       fi
+      kv_keys+=("$key"); kv_values+=("$resolved"); kv_secret+=("1")
     elif [[ "$value" == "__prompt__" ]]; then
       env_value="${!key:-}"
       if [[ -n "$env_value" ]]; then
-        output+="${key}=${env_value}"$'\n'
+        resolved="$env_value"
       elif [[ -t 0 ]]; then
-        read -rp "${key}: " user_value
-        [[ -z "$user_value" ]] && echo "error: ${key} is required" >&2 && exit 1
-        output+="${key}=${user_value}"$'\n'
+        read -rp "${key}: " resolved
+        [[ -z "$resolved" ]] && echo "error: ${key} is required" >&2 && exit 1
       else
         echo "error: ${key} is required (set it as an environment variable)" >&2 && exit 1
       fi
+      kv_keys+=("$key"); kv_values+=("$resolved"); kv_secret+=("0")
     elif [[ "$value" =~ ^__prompt:(.*)__$ ]]; then
       default="${BASH_REMATCH[1]}"
       env_value="${!key:-}"
@@ -91,15 +96,28 @@ if [[ "${1:-}" == "--setup" ]]; then
       else
         resolved="$default"
       fi
-      [[ -n "$resolved" ]] && output+="${key}=${resolved}"$'\n'
+      [[ -n "$resolved" ]] && { kv_keys+=("$key"); kv_values+=("$resolved"); kv_secret+=("0"); }
     else
-      output+="${line}"$'\n'
+      kv_keys+=("${line%%=*}"); kv_values+=("${line#*=}"); kv_secret+=("0")
     fi
   done < "$preset_file"
 
-  printf '%s' "$output" > "$CLAUDEX_ENV_FILE"
+  # Initialize empty .env file for dotenvx set to operate on.
+  touch "$CLAUDEX_ENV_FILE"
+
+  # Write all values via dotenvx set — secrets are encrypted, others are plain.
+  for i in "${!kv_keys[@]}"; do
+    if [[ "${kv_secret[$i]}" == "1" ]]; then
+      dotenvx set "${kv_keys[$i]}" "${kv_values[$i]}" -f "$CLAUDEX_ENV_FILE" --quiet
+    else
+      dotenvx set "${kv_keys[$i]}" "${kv_values[$i]}" -f "$CLAUDEX_ENV_FILE" --plain --quiet
+    fi
+  done
+
   chmod 600 "$CLAUDEX_ENV_FILE"
-  echo "Config written to $CLAUDEX_ENV_FILE (preset: ${preset_name})"
+  [[ -f "${CLAUDEX_CONFIG_DIR}/.env.keys" ]] && chmod 600 "${CLAUDEX_CONFIG_DIR}/.env.keys"
+  echo "Config written to $CLAUDEX_ENV_FILE (encrypted, preset: ${preset_name})"
+  [[ -f "${CLAUDEX_CONFIG_DIR}/.env.keys" ]] && echo "Decryption key: ${CLAUDEX_CONFIG_DIR}/.env.keys (keep this safe)"
   exit 0
 fi
 
