@@ -1,15 +1,23 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
+permissions: {}
+
 jobs:
   lint:
+    timeout-minutes: 5
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.0
+        timeout-minutes: 5
+        with:
+          persist-credentials: false
       - name: shellcheck
+        timeout-minutes: 5
         run: shellcheck claudex install.sh
