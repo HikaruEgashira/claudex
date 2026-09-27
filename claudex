@@ -116,7 +116,11 @@ daemon_status() {
   [[ -f "$CLAUDEX_PID_FILE" ]] && pid="$(cat "$CLAUDEX_PID_FILE")"
   health_ok "$port" && state="running (port :$port, pid ${pid:-unknown})"
   echo "daemon: $state"
-  [[ "$state" == stopped ]] && return 1
+  if [[ "$state" == stopped ]]; then
+    if [[ ! -f "$CLAUDEX_CONFIG_FILE" ]]; then
+      echo "hint: no config yet — run 'claudex --setup' first"
+    fi
+  fi
   return 0
 }
 
