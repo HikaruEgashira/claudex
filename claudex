@@ -1,14 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Resolve the real script location even when invoked through a symlink
+# (installed layout: ~/.local/bin/claudex -> ~/.local/share/claudex/claudex),
+# so presets/ and claudexd.mjs are found next to the actual files.
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+CLAUDEX_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
 CLAUDEX_CONFIG_DIR="${CLAUDEX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/claudex}"
 CLAUDEX_ENV_FILE="${CLAUDEX_CONFIG_DIR}/.env"
 CLAUDEX_KEYS_FILE="${CLAUDEX_CONFIG_DIR}/.env.keys"
 CLAUDEX_CONFIG_FILE="${CLAUDEX_CONFIG_DIR}/config.json"
 CLAUDEX_PID_FILE="${CLAUDEX_CONFIG_DIR}/daemon.pid"
 CLAUDEX_LOG_FILE="${CLAUDEX_CONFIG_DIR}/daemon.log"
-CLAUDEX_DAEMON="${CLAUDEX_DAEMON:-$(cd "$(dirname "$0")" && pwd)/claudexd.mjs}"
-CLAUDEX_PRESETS_DIR="${CLAUDEX_PRESETS_DIR:-$(cd "$(dirname "$0")" && pwd)/presets}"
+CLAUDEX_DAEMON="${CLAUDEX_DAEMON:-$CLAUDEX_DIR/claudexd.mjs}"
+CLAUDEX_PRESETS_DIR="${CLAUDEX_PRESETS_DIR:-$CLAUDEX_DIR/presets}"
 MARKER="claudex"
 
 # Dependency checks
