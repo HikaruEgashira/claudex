@@ -21,3 +21,6 @@ jobs:
       - name: shellcheck
         timeout-minutes: 5
         run: shellcheck claudex install.sh
+      - name: proxy self-test (routing + SSE + auth swap)
+        timeout-minutes: 5
+        run: node claudexd.mjs --self-test

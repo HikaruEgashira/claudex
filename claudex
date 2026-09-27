@@ -1,131 +1,323 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CLAUDEX_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claudex"
+CLAUDEX_CONFIG_DIR="${CLAUDEX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/claudex}"
 CLAUDEX_ENV_FILE="${CLAUDEX_CONFIG_DIR}/.env"
+CLAUDEX_KEYS_FILE="${CLAUDEX_CONFIG_DIR}/.env.keys"
+CLAUDEX_CONFIG_FILE="${CLAUDEX_CONFIG_DIR}/config.json"
+CLAUDEX_PID_FILE="${CLAUDEX_CONFIG_DIR}/daemon.pid"
+CLAUDEX_LOG_FILE="${CLAUDEX_CONFIG_DIR}/daemon.log"
+CLAUDEX_DAEMON="${CLAUDEX_DAEMON:-$(cd "$(dirname "$0")" && pwd)/claudexd.mjs}"
 CLAUDEX_PRESETS_DIR="${CLAUDEX_PRESETS_DIR:-$(cd "$(dirname "$0")" && pwd)/presets}"
+MARKER="claudex"
 
 # Dependency checks
-if ! command -v claude &>/dev/null; then
-  echo "error: claude CLI not found. Install: https://docs.anthropic.com/en/docs/claude-code" >&2
-  exit 1
-fi
-
-if ! command -v dotenvx &>/dev/null; then
-  echo "error: dotenvx not found. Install: https://dotenvx.com/docs/install" >&2
-  exit 1
-fi
-
-# Setup mode
-if [[ "${1:-}" == "--setup" ]]; then
-  preset_name="${2:-}"
-
-  # List presets when no name given
-  if [[ -z "$preset_name" ]]; then
-    echo "Usage: claudex --setup <preset>"
-    echo ""
-    echo "Available presets:"
-    for f in "$CLAUDEX_PRESETS_DIR"/*.env; do
-      [[ -f "$f" ]] || continue
-      name="$(basename "$f" .env)"
-      desc="$(grep -m1 '^#' "$f" | sed 's/^# *//')"
-      printf "  %-12s %s\n" "$name" "$desc"
-    done
-    exit 0
-  fi
-
-  preset_file="${CLAUDEX_PRESETS_DIR}/${preset_name}.env"
-  if [[ ! -f "$preset_file" ]]; then
-    echo "error: unknown preset '${preset_name}'" >&2
-    echo "Run 'claudex --setup' to see available presets." >&2
+for DEP in claude node dotenvx curl; do
+  if ! command -v "$DEP" >/dev/null 2>&1; then
+    echo "error: $DEP not found" >&2
     exit 1
   fi
+done
 
-  mkdir -p "$CLAUDEX_CONFIG_DIR"
-  if [[ -f "$CLAUDEX_ENV_FILE" ]]; then
-    if [[ -t 0 ]]; then
-      echo "Config already exists at $CLAUDEX_ENV_FILE"
-      read -rp "Overwrite? [y/N] " answer
-      [[ "$answer" != [yY] ]] && exit 0
-    fi
-    rm -f "$CLAUDEX_ENV_FILE" "${CLAUDEX_CONFIG_DIR}/.env.keys"
+# Reads a dotted path from config.json; empty string when absent or file missing.
+config_get() {
+  node -e '
+    let c = {};
+    try { c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); } catch {}
+    let v = c;
+    for (const k of process.argv[2].split(".")) v = v ? v[k] : undefined;
+    console.log(v ?? "");
+  ' "$CLAUDEX_CONFIG_FILE" "$1"
+}
+
+daemon_port() {
+  local port
+  port="$(config_get port)"
+  echo "${port:-17865}"
+}
+
+# Liveness is only trusted when the responder is OUR daemon (marker check).
+# A foreign listener returning 200 on /healthz must not be mistaken for us.
+health_ok() {
+  curl -fsS "http://127.0.0.1:$1/healthz" 2>/dev/null | grep -q '"marker":"claudex"'
+}
+
+# True when a controlling terminal exists (works even when fd 0 is redirected,
+# e.g. inside `while read ... done < file` loops).
+has_tty() { ( exec 9<>/dev/tty ) 2>/dev/null; }
+
+daemon_start() {
+  if [[ ! -f "$CLAUDEX_CONFIG_FILE" ]]; then
+    echo "error: $CLAUDEX_CONFIG_FILE not found. Run: claudex --setup" >&2
+    return 1
   fi
+  if [[ ! -f "$CLAUDEX_ENV_FILE" || ! -f "$CLAUDEX_KEYS_FILE" ]]; then
+    echo "error: $CLAUDEX_ENV_FILE / $CLAUDEX_KEYS_FILE missing. Run: claudex --setup" >&2
+    return 1
+  fi
+  local port
+  port="$(daemon_port)"
+  if health_ok "$port"; then
+    echo "daemon already running on :$port"
+    return 0
+  fi
+  mkdir -p "$CLAUDEX_CONFIG_DIR"
+  env -u DOTENV_PRIVATE_KEY dotenvx run --quiet --env-file "$CLAUDEX_ENV_FILE" -fk "$CLAUDEX_KEYS_FILE" -- \
+    node "$CLAUDEX_DAEMON" --config "$CLAUDEX_CONFIG_FILE" --pidfile "$CLAUDEX_PID_FILE" \
+    >>"$CLAUDEX_LOG_FILE" 2>&1 &
+  disown
+  for _ in $(seq 1 20); do
+    health_ok "$port" && { echo "daemon started on :$port"; return 0; }
+    sleep 0.3
+  done
+  # spawn failed: kill the straggler so we never leave an orphan behind
+  if [[ -f "$CLAUDEX_PID_FILE" ]]; then kill "$(cat "$CLAUDEX_PID_FILE")" 2>/dev/null || true; fi
+  pkill -f "claudexd.mjs.*$CLAUDEX_CONFIG_FILE" 2>/dev/null || true
+  echo "error: daemon failed to start. Last log lines:" >&2
+  tail -3 "$CLAUDEX_LOG_FILE" >&2 2>/dev/null || true
+  return 1
+}
 
-  # Collect key-value pairs in memory, then write encrypted via dotenvx set.
-  # Plaintext secrets never touch the filesystem.
-  declare -a kv_keys=()
-  declare -a kv_values=()
-  declare -a kv_secret=()  # "1" = encrypt, "0" = plain
-
-  while IFS= read -r line; do
-    [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
-    key="${line%%=*}"
-    value="${line#*=}"
-
-    if [[ "$value" == "__secret__" ]]; then
-      env_value="${!key:-}"
-      if [[ -n "$env_value" ]]; then
-        resolved="$env_value"
-      elif [[ -t 0 ]]; then
-        read -rp "${key}: " -s resolved
-        echo
-        [[ -z "$resolved" ]] && echo "error: ${key} is required" >&2 && exit 1
-      else
-        echo "error: ${key} is required (set it as an environment variable)" >&2 && exit 1
-      fi
-      kv_keys+=("$key"); kv_values+=("$resolved"); kv_secret+=("1")
-    elif [[ "$value" == "__prompt__" ]]; then
-      env_value="${!key:-}"
-      if [[ -n "$env_value" ]]; then
-        resolved="$env_value"
-      elif [[ -t 0 ]]; then
-        read -rp "${key}: " resolved
-        [[ -z "$resolved" ]] && echo "error: ${key} is required" >&2 && exit 1
-      else
-        echo "error: ${key} is required (set it as an environment variable)" >&2 && exit 1
-      fi
-      kv_keys+=("$key"); kv_values+=("$resolved"); kv_secret+=("0")
-    elif [[ "$value" =~ ^__prompt:(.*)__$ ]]; then
-      default="${BASH_REMATCH[1]}"
-      env_value="${!key:-}"
-      if [[ -n "$env_value" ]]; then
-        resolved="$env_value"
-      elif [[ -t 0 ]]; then
-        read -rp "${key} [${default}]: " user_value
-        resolved="${user_value:-$default}"
-      else
-        resolved="$default"
-      fi
-      [[ -n "$resolved" ]] && { kv_keys+=("$key"); kv_values+=("$resolved"); kv_secret+=("0"); }
-    else
-      kv_keys+=("${line%%=*}"); kv_values+=("${line#*=}"); kv_secret+=("0")
+daemon_stop() {
+  local port pid
+  port="$(daemon_port)"
+  if [[ -f "$CLAUDEX_PID_FILE" ]]; then
+    pid="$(cat "$CLAUDEX_PID_FILE")"
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid"
+      for _ in $(seq 1 20); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+      done
     fi
-  done < "$preset_file"
+  fi
+  if health_ok "$port"; then
+    echo "error: daemon still responding on :$port" >&2
+    return 1
+  fi
+  rm -f "$CLAUDEX_PID_FILE"
+  echo "daemon stopped"
+}
 
-  # Initialize empty .env file for dotenvx set to operate on.
-  touch "$CLAUDEX_ENV_FILE"
+daemon_status() {
+  local port pid state="stopped"
+  port="$(daemon_port)"
+  [[ -f "$CLAUDEX_PID_FILE" ]] && pid="$(cat "$CLAUDEX_PID_FILE")"
+  health_ok "$port" && state="running (port :$port, pid ${pid:-unknown})"
+  echo "daemon: $state"
+  [[ "$state" == stopped ]] && return 1
+  return 0
+}
 
-  # Write all values via dotenvx set — secrets are encrypted, others are plain.
-  # Unset DOTENV_PRIVATE_KEY so dotenvx generates a fresh keypair into .env.keys
-  # instead of reusing a stale key from the shell environment.
-  for i in "${!kv_keys[@]}"; do
-    if [[ "${kv_secret[$i]}" == "1" ]]; then
-      env -u DOTENV_PRIVATE_KEY dotenvx set "${kv_keys[$i]}" "${kv_values[$i]}" -f "$CLAUDEX_ENV_FILE" --quiet
-    else
-      env -u DOTENV_PRIVATE_KEY dotenvx set "${kv_keys[$i]}" "${kv_values[$i]}" -f "$CLAUDEX_ENV_FILE" --plain --quiet
-    fi
+# ---------------------------------------------------------------------------
+# --setup: add/replace providers. Interactive (no preset args on a tty) or
+# CLI-driven. Secrets go to the encrypted .env; provider metadata to config.json.
+# ---------------------------------------------------------------------------
+setup() {
+  local reset=0 token="" name
+  local -a presets=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --reset) reset=1; shift ;;
+      --token)
+        token="${2:-}"
+        [[ -n "$token" ]] || { echo "error: --token requires a value" >&2; return 1; }
+        shift 2
+        ;;
+      --help) print_presets; return 0 ;;
+      -*) echo "error: unknown option $1" >&2; return 1 ;;
+      *) presets+=("$1"); shift ;;
+    esac
   done
 
-  chmod 600 "$CLAUDEX_ENV_FILE"
-  [[ -f "${CLAUDEX_CONFIG_DIR}/.env.keys" ]] && chmod 600 "${CLAUDEX_CONFIG_DIR}/.env.keys"
-  echo "Config written to $CLAUDEX_ENV_FILE (encrypted, preset: ${preset_name})"
-  [[ -f "${CLAUDEX_CONFIG_DIR}/.env.keys" ]] && echo "Decryption key: ${CLAUDEX_CONFIG_DIR}/.env.keys (keep this safe)"
-  exit 0
-fi
+  if [[ "$reset" == 1 ]]; then
+    if [[ -t 0 ]]; then
+      read -rp "Reset all claudex config (config.json, .env, .env.keys)? [y/N] " answer
+      [[ "$answer" != [yY] ]] && return 0
+    fi
+    rm -f "$CLAUDEX_CONFIG_FILE" "$CLAUDEX_ENV_FILE" "$CLAUDEX_KEYS_FILE" "$CLAUDEX_PID_FILE"
+    echo "config reset"
+  fi
 
-if [[ ! -f "$CLAUDEX_ENV_FILE" ]]; then
-  echo "error: $CLAUDEX_ENV_FILE not found. Run: claudex --setup" >&2
-  exit 1
-fi
+  if [[ "${#presets[@]}" -eq 0 ]]; then
+    if [[ ! -t 0 ]]; then
+      print_presets
+      return 1
+    fi
+    print_presets
+    read -rp "Providers to configure (space separated): " -ra selected
+    presets=("${selected[@]}")
+  fi
+  [[ "${#presets[@]}" -eq 0 ]] && return 0
 
-exec env -u DOTENV_PRIVATE_KEY dotenvx run --quiet --env-file "$CLAUDEX_ENV_FILE" -fk "${CLAUDEX_CONFIG_DIR}/.env.keys" -- claude "$@"
+  # Resolve each preset's secret(s) and metadata, write the secret(s), collect
+  # TSV rows (name<TAB>baseUrl<TAB>tokenKey<TAB>opus<TAB>sonnet<TAB>haiku).
+  local tsv=""
+  for name in "${presets[@]}"; do
+    local preset_file="${CLAUDEX_PRESETS_DIR}/${name}.env"
+    if [[ ! -f "$preset_file" ]]; then
+      echo "error: unknown preset '${name}'" >&2
+      print_presets >&2
+      return 1
+    fi
+
+    local upper base="" opus="" sonnet="" haiku="" tokval=""
+    upper="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+    local tok_env="${upper}_AUTH_TOKEN"
+
+    while IFS= read -r line; do
+      [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+      local key="${line%%=*}" val="${line#*=}"
+      case "$key" in
+        ANTHROPIC_BASE_URL) base="$val" ;;
+        ANTHROPIC_DEFAULT_OPUS_MODEL) opus="$val" ;;
+        ANTHROPIC_DEFAULT_SONNET_MODEL) sonnet="$val" ;;
+        ANTHROPIC_DEFAULT_HAIKU_MODEL) haiku="$val" ;;
+        ANTHROPIC_AUTH_TOKEN)
+          tokval="${!tok_env:-}"
+          if [[ -n "$token" ]]; then tokval="$token"
+          elif [[ -n "$tokval" ]]; then :
+          elif has_tty; then
+            # stdin is redirected from the preset file in this loop: read from /dev/tty
+            read -rp "${tok_env}: " -s tokval < /dev/tty
+            echo
+          fi
+          [[ -n "$tokval" ]] || { echo "error: ${tok_env} is required (set it as an environment variable or pass --token)" >&2; return 1; }
+          ;;
+      esac
+    done < "$preset_file"
+
+    if [[ -z "$base" ]]; then
+      echo "error: preset '${name}' has no ANTHROPIC_BASE_URL (native-mode preset like bedrock/vertex/foundry)." >&2
+      echo "       Native modes use Claude Code settings directly and cannot go through the claudex proxy." >&2
+      return 1
+    fi
+
+    # Persist the secret (encrypted) — merge into the existing .env, keep .env.keys.
+    # cd into the config dir so dotenvx discovers/creates .env.keys there (it
+    # searches upward from cwd and would otherwise adopt a stray key file).
+    mkdir -p "$CLAUDEX_CONFIG_DIR"
+    (cd "$CLAUDEX_CONFIG_DIR" && env -u DOTENV_PRIVATE_KEY dotenvx set "${tok_env}" "${tokval}" -f "$CLAUDEX_ENV_FILE" --quiet)
+
+    row="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$name" "$base" "$tok_env" "$opus" "$sonnet" "$haiku")"
+    tsv="$(printf '%s\n%s' "$tsv" "$row")"
+  done
+
+  # Interactive (tty): pick which provider backs each default model slot.
+  # Non-interactive: first provider fills any unset slot (in the node merge).
+  local defaults_json="{}"
+  if [[ -t 0 ]]; then
+    local role reply line i chosen chosen_model
+    for role in opus sonnet haiku; do
+      local -a candidates=()
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local pname base _ o s h m=""
+        IFS=$'\t' read -r pname base _ o s h <<< "$line"
+        case "$role" in opus) m="$o" ;; sonnet) m="$s" ;; haiku) m="$h" ;; esac
+        [[ -n "$m" ]] && candidates+=("${pname}|${m}")
+      done <<< "$tsv" || true
+      [[ "${#candidates[@]}" -eq 0 ]] && continue
+      echo "Default $role slot:"
+      for i in "${!candidates[@]}"; do
+        printf '  %d) %s (%s)\n' "$((i + 1))" "${candidates[$i]%%|*}" "${candidates[$i]##*|}"
+      done
+      read -rp "Choose [empty = keep current]: " reply
+      if [[ "$reply" =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= ${#candidates[@]} )); then
+        chosen="${candidates[$((reply - 1))]}"
+        chosen_model="${chosen##*|}"
+        defaults_json="$(node -e 'const d=JSON.parse(process.argv[1]); d[process.argv[2]]=process.argv[3]; console.log(JSON.stringify(d))' "$defaults_json" "$role" "$chosen_model")"
+      fi
+    done
+  fi
+
+  # Merge into config.json (node: providers/routes/defaults).
+  node - "$CLAUDEX_CONFIG_FILE" "$defaults_json" "$tsv" <<'EOF'
+const fs = require("fs");
+const [configFile, defaultsCli, tsv] = process.argv.slice(2);
+let cfg = {};
+try { cfg = JSON.parse(fs.readFileSync(configFile, "utf8")); } catch {}
+const providers = cfg.providers ?? {};
+const routes = cfg.routes ?? {};
+const defaults = cfg.defaults ?? {};
+const rows = tsv.split("\n").filter(Boolean);
+const first = rows[0];
+const warn = [];
+for (const line of rows) {
+  const [name, baseUrl, tokenKey, opus, sonnet, haiku] = line.split("\t");
+  providers[name] = { baseUrl, authToken: `\${${tokenKey}}` };
+  for (const m of [opus, sonnet, haiku]) {
+    if (!m) continue;
+    if (routes[m] && routes[m] !== name) warn.push(`model ${m} was routed to ${routes[m]}, re-routing to ${name}`);
+    routes[m] = name;
+  }
+}
+const defaultsNew = JSON.parse(defaultsCli);
+for (const role of ["opus", "sonnet", "haiku"]) {
+  if (defaultsNew[role]) continue;             // explicit choice wins
+  if (defaults[role]) continue;                // keep existing
+  if (!first) continue;
+  const f = first.split("\t");
+  const v = { opus: f[3], sonnet: f[4], haiku: f[5] }[role];
+  if (v) defaultsNew[role] = v;
+}
+for (const w of warn) console.error(`warning: ${w}`);
+const out = {
+  port: cfg.port ?? 17865,
+  defaultProvider: cfg.defaultProvider ?? Object.keys(providers)[0],
+  providers,
+  routes,
+  defaults: { ...defaults, ...defaultsNew },
+};
+fs.writeFileSync(configFile, JSON.stringify(out, null, 2) + "\n");
+EOF
+
+  echo "Config written to $CLAUDEX_CONFIG_FILE (routes/defaults hand-edit there)"
+  echo "Secrets encrypted in $CLAUDEX_ENV_FILE (key: $CLAUDEX_KEYS_FILE)"
+  echo "Run 'claudex start' to launch the daemon, then 'claudex' to use Claude Code."
+}
+
+print_presets() {
+  echo "Usage: claudex --setup [<preset>...] [--token <t>] [--reset]"
+  echo ""
+  echo "Presets (proxy-compatible):"
+  for f in "$CLAUDEX_PRESETS_DIR"/*.env; do
+    [[ -f "$f" ]] || continue
+    name="$(basename "$f" .env)"
+    desc="$(grep -m1 '^#' "$f" | sed 's/^# *//')"
+    native=""
+    grep -q '^CLAUDE_CODE_USE_' "$f" && native=" (native mode, not supported by the proxy)"
+    printf "  %-12s %s%s\n" "$name" "$desc" "$native"
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+  start) daemon_start ;;
+  stop) daemon_stop ;;
+  restart) daemon_stop && daemon_start ;;
+  status) daemon_status ;;
+  config)
+    if [[ ! -f "$CLAUDEX_CONFIG_FILE" ]]; then
+      echo "error: no config yet. Run: claudex --setup" >&2
+      exit 1
+    fi
+    cat "$CLAUDEX_CONFIG_FILE"
+    ;;
+  --self-test) exec node "$CLAUDEX_DAEMON" --self-test ;;
+  --setup) shift; setup "$@" ;;
+  *)
+    # Default: run Claude Code through the proxy daemon.
+    daemon_start || exit 1
+    port="$(daemon_port)"
+    export ANTHROPIC_BASE_URL="http://127.0.0.1:${port}"
+    export ANTHROPIC_AUTH_TOKEN="$MARKER"
+    opus="$(config_get defaults.opus)";  [[ -n "$opus" ]]  && export ANTHROPIC_DEFAULT_OPUS_MODEL="$opus"
+    sonnet="$(config_get defaults.sonnet)"; [[ -n "$sonnet" ]] && export ANTHROPIC_DEFAULT_SONNET_MODEL="$sonnet"
+    haiku="$(config_get defaults.haiku)";  [[ -n "$haiku" ]] && export ANTHROPIC_DEFAULT_HAIKU_MODEL="$haiku"
+    exec claude "$@"
+    ;;
+esac

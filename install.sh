@@ -9,7 +9,8 @@ PRESETS=(anthropic zai openrouter bedrock vertex foundry qwen)
 mkdir -p "$INSTALL_DIR/presets" "$BIN_DIR"
 
 curl -fsSL "${REPO_RAW}/claudex" -o "${INSTALL_DIR}/claudex"
-chmod +x "${INSTALL_DIR}/claudex"
+curl -fsSL "${REPO_RAW}/claudexd.mjs" -o "${INSTALL_DIR}/claudexd.mjs"
+chmod +x "${INSTALL_DIR}/claudex" "${INSTALL_DIR}/claudexd.mjs"
 
 for preset in "${PRESETS[@]}"; do
   curl -fsSL "${REPO_RAW}/presets/${preset}.env" -o "${INSTALL_DIR}/presets/${preset}.env"
@@ -24,4 +25,4 @@ case ":${PATH}:" in
 esac
 
 echo "Installed claudex to ${INSTALL_DIR}"
-echo "Run 'claudex --setup' to configure your API credentials."
+echo "Run 'claudex --setup' to configure your providers."
